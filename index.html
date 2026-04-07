@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>Memuar's Snake</title>
+    <title>Memuar's Snake — Стены + Орбы</title>
     <style>
         * {
             user-select: none;
@@ -219,11 +219,13 @@
         const BOARD_SIZE = 20;
         const CELL_SIZE = 25;
         const TICK_INTERVAL_MS = 140;
+        const ORB_LIFESPAN_MS = 3000; // 3 секунды
 
-        let currentMode = "orbs_walls"; // classic / walls / orbs_walls
+        let currentMode = "orbs_walls";
         
-        // Стены (только для режимов walls и orbs_walls)
         let walls = []; // массив {x, y}
+        let orbTimeout = null;
+        let currentOrbActive = false;
         
         // DOM
         const canvas = document.getElementById('snakeCanvas');
@@ -237,7 +239,7 @@
         let direction = 'RIGHT';
         let nextDirection = 'RIGHT';
         let food = { x: 12, y: 10 };
-        let isDoubleOrb = false;  // двойной орб? (+2)
+        let isDoubleOrb = false;
         let score = 0;
         let bestScore = 0;
         let gameLoop = null;
@@ -248,6 +250,7 @@
         let eatSoundBuffer = null;
         let doubleEatSoundBuffer = null;
         let crashSoundBuffer = null;
+        let orbDisappearBuffer = null;
         
         // ========== ЗВУКИ ==========
         function initAudio() {
@@ -257,6 +260,7 @@
                 createEatSound();
                 createDoubleEatSound();
                 createCrashSound();
+                createOrbDisappearSound();
             } catch(e) { console.log("Web Audio не поддерживается"); }
         }
         
@@ -306,6 +310,21 @@
             crashSoundBuffer = buffer;
         }
         
+        function createOrbDisappearSound() {
+            if (!audioCtx) return;
+            const duration = 0.25;
+            const sampleRate = audioCtx.sampleRate;
+            const frameCount = sampleRate * duration;
+            const buffer = audioCtx.createBuffer(1, frameCount, sampleRate);
+            const data = buffer.getChannelData(0);
+            for (let i = 0; i < frameCount; i++) {
+                let t = i / sampleRate;
+                let freq = 660 * Math.exp(-t * 8);
+                data[i] = Math.sin(2 * Math.PI * freq * t) * (1 - t/duration);
+            }
+            orbDisappearBuffer = buffer;
+        }
+        
         function playEatSound(isDouble = false) {
             if (!audioCtx) return;
             const source = audioCtx.createBufferSource();
@@ -318,6 +337,14 @@
             if (!audioCtx || !crashSoundBuffer) return;
             const source = audioCtx.createBufferSource();
             source.buffer = crashSoundBuffer;
+            source.connect(audioCtx.destination);
+            source.start();
+        }
+        
+        function playOrbDisappearSound() {
+            if (!audioCtx || !orbDisappearBuffer) return;
+            const source = audioCtx.createBufferSource();
+            source.buffer = orbDisappearBuffer;
             source.connect(audioCtx.destination);
             source.start();
         }
@@ -352,43 +379,105 @@
             }
         }
         
-        // ========== ГЕНЕРАЦИЯ СТЕН (рандом, но не блокируют полную победу) ==========
+        // ========== ГЕНЕРАЦИЯ ЦЕЛЬНЫХ СТЕН ==========
+        function isNearSnake(x, y, distance = 3) {
+            for (let seg of snake) {
+                if (Math.abs(seg.x - x) <= distance && Math.abs(seg.y - y) <= distance) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        
         function generateWalls() {
             if (currentMode === "classic") {
                 walls = [];
                 return;
             }
             
-            // 25-35 стен
-            const wallCount = Math.floor(Math.random() * 15) + 20; // 20-35 стен
-            const newWalls = [];
-            const snakeSet = new Set(snake.map(s => `${s.x},${s.y}`));
+            walls = [];
+            // Цельные блоки: 2x2, 2x3 или 3x2 (случайно)
+            const wallBlocks = [
+                { w: 2, h: 2 }, { w: 2, h: 3 }, { w: 3, h: 2 }, { w: 2, h: 2 }, { w: 2, h: 2 }
+            ];
             
-            // Стартовая позиция змейки и еда пока не сгенерирована, но мы добавим позже проверку
-            for (let i = 0; i < wallCount; i++) {
-                let attempts = 0;
-                let placed = false;
-                while (!placed && attempts < 100) {
-                    const wx = Math.floor(Math.random() * BOARD_SIZE);
-                    const wy = Math.floor(Math.random() * BOARD_SIZE);
-                    const key = `${wx},${wy}`;
-                    // Не ставим стены на змейку, на еду, и не перекрываем полностью возможность пройти
-                    if (!snakeSet.has(key) && !(wx === food.x && wy === food.y) && !newWalls.some(w => w.x === wx && w.y === wy)) {
-                        // Проверка: не отрезать ли змейку от остального поля? упрощённо - ставим, но гарантируем, что можно собрать всё
-                        // Для простоты ставим, но если стена на стартовой позиции - пропускаем
-                        if (wx >= 5 && wx <= 15 && wy >= 5 && wy <= 15 && newWalls.length < wallCount-5) {
-                            // разрешаем
-                        }
-                        newWalls.push({ x: wx, y: wy });
-                        placed = true;
+            let totalWallCells = 0;
+            const maxWallCells = 24; // примерно 10-18 клеток (блоки по 2-6 клеток)
+            
+            for (let attempt = 0; attempt < 20 && totalWallCells < maxWallCells; attempt++) {
+                const block = wallBlocks[Math.floor(Math.random() * wallBlocks.length)];
+                const startX = Math.floor(Math.random() * (BOARD_SIZE - block.w));
+                const startY = Math.floor(Math.random() * (BOARD_SIZE - block.h));
+                
+                // Проверка: не рядом со змейкой и не на еде
+                let valid = true;
+                for (let dx = 0; dx < block.w; dx++) {
+                    for (let dy = 0; dy < block.h; dy++) {
+                        const x = startX + dx;
+                        const y = startY + dy;
+                        if (isNearSnake(x, y, 2)) valid = false;
+                        if (food && x === food.x && y === food.y) valid = false;
+                        // Не перекрывать стартовую зону змейки
+                        if (x >= 8 && x <= 12 && y >= 8 && y <= 12) valid = false;
                     }
-                    attempts++;
+                }
+                
+                if (valid) {
+                    for (let dx = 0; dx < block.w; dx++) {
+                        for (let dy = 0; dy < block.h; dy++) {
+                            const x = startX + dx;
+                            const y = startY + dy;
+                            if (!walls.some(w => w.x === x && w.y === y)) {
+                                walls.push({ x, y });
+                                totalWallCells++;
+                            }
+                        }
+                    }
                 }
             }
-            walls = newWalls;
         }
         
-        // ========== ГЕНЕРАЦИЯ ЕДЫ (обычная или двойной орб) ==========
+        // ========== ГЕНЕРАЦИЯ ЕДЫ / ОРБА ==========
+        function clearOrbTimer() {
+            if (orbTimeout) {
+                clearTimeout(orbTimeout);
+                orbTimeout = null;
+            }
+        }
+        
+        function removeOrb() {
+            if (currentOrbActive && gameActive) {
+                currentOrbActive = false;
+                isDoubleOrb = false;
+                playOrbDisappearSound();
+                // Превращаем обратно в обычную еду
+                generateNormalFood();
+                drawCanvas();
+            }
+        }
+        
+        function generateNormalFood() {
+            const snakeSet = new Set(snake.map(s => `${s.x},${s.y}`));
+            const wallSet = new Set(walls.map(w => `${w.x},${w.y}`));
+            
+            let freeCells = [];
+            for (let i = 0; i < BOARD_SIZE; i++) {
+                for (let j = 0; j < BOARD_SIZE; j++) {
+                    const key = `${i},${j}`;
+                    if (!snakeSet.has(key) && !wallSet.has(key)) {
+                        freeCells.push({ x: i, y: j });
+                    }
+                }
+            }
+            
+            if (freeCells.length > 0) {
+                const rand = Math.floor(Math.random() * freeCells.length);
+                food = freeCells[rand];
+            }
+            isDoubleOrb = false;
+            currentOrbActive = false;
+        }
+        
         function generateValidFood() {
             const totalCells = BOARD_SIZE * BOARD_SIZE;
             const snakeSet = new Set(snake.map(s => `${s.x},${s.y}`));
@@ -427,11 +516,23 @@
             const rand = Math.floor(Math.random() * freeCells.length);
             food = freeCells[rand];
             
-            // Двойной орб (только для режима orbs_walls, 25% шанс)
+            // Для режима orbs_walls: 10% шанс на орб
             if (currentMode === "orbs_walls") {
-                isDoubleOrb = (Math.random() < 0.25);
+                const orbChance = Math.random() < 0.1;
+                if (orbChance) {
+                    isDoubleOrb = true;
+                    currentOrbActive = true;
+                    clearOrbTimer();
+                    orbTimeout = setTimeout(() => {
+                        removeOrb();
+                    }, ORB_LIFESPAN_MS);
+                } else {
+                    isDoubleOrb = false;
+                    currentOrbActive = false;
+                }
             } else {
                 isDoubleOrb = false;
+                currentOrbActive = false;
             }
         }
         
@@ -454,7 +555,7 @@
                 if (hitWall) return false;
             }
             
-            // Столкновение с границей
+            // Границы
             if (newHead.x < 0 || newHead.x >= BOARD_SIZE || newHead.y < 0 || newHead.y >= BOARD_SIZE) {
                 return false;
             }
@@ -463,10 +564,13 @@
             const growAmount = (willEat && isDoubleOrb) ? 2 : 1;
             
             if (willEat) {
-                // Добавляем голову + дополнительный сегмент для двойного орба
+                if (isDoubleOrb && currentOrbActive) {
+                    clearOrbTimer();
+                    currentOrbActive = false;
+                }
+                
                 snake.unshift(newHead);
                 if (growAmount === 2) {
-                    // Добавляем ещё один сегмент в конец (дублируем хвост)
                     const tail = snake[snake.length-1];
                     snake.push({ ...tail });
                     score += 2;
@@ -483,7 +587,7 @@
                 snake.pop();
             }
             
-            // Проверка столкновения с собой
+            // Самосъедение
             const head = snake[0];
             for (let i = 1; i < snake.length; i++) {
                 if (snake[i].x === head.x && snake[i].y === head.y) {
@@ -526,7 +630,7 @@
                 ctx.stroke();
             }
             
-            // Стены
+            // Стены (цельные блоки)
             if (currentMode !== "classic") {
                 for (let w of walls) {
                     ctx.fillStyle = '#4a5b6e';
@@ -537,10 +641,12 @@
                 }
             }
             
-            // Еда
-            if (isDoubleOrb && currentMode === "orbs_walls") {
-                ctx.fillStyle = '#f39c12';
-                ctx.shadowBlur = 10;
+            // Еда / Орб
+            if (isDoubleOrb && currentMode === "orbs_walls" && currentOrbActive) {
+                // Мигающий орб
+                const pulse = (Date.now() % 500) / 500;
+                ctx.fillStyle = `rgba(243, 156, 18, ${0.6 + pulse * 0.4})`;
+                ctx.shadowBlur = 12;
                 ctx.shadowColor = '#f39c12';
                 ctx.fillRect(food.x * CELL_SIZE + 1, food.y * CELL_SIZE + 1, CELL_SIZE - 2, CELL_SIZE - 2);
                 ctx.fillStyle = '#e67e22';
@@ -619,9 +725,7 @@
         let touchStart = null;
         function handleTouchStart(e) {
             e.preventDefault();
-            const rect = canvas.getBoundingClientRect();
-            const touch = e.touches[0];
-            touchStart = { x: touch.clientX, y: touch.clientY };
+            touchStart = { x: e.touches[0].clientX, y: e.touches[0].clientY };
         }
         
         function handleTouchEnd(e) {
@@ -642,7 +746,8 @@
         
         function newGame() {
             if (gameLoop) clearInterval(gameLoop);
-            // Стартовая змейка
+            clearOrbTimer();
+            
             snake = [
                 { x: 10, y: 10 },
                 { x: 9, y: 10 },
@@ -656,25 +761,23 @@
             gameStatusSpan.innerHTML = "▶ ИГРА";
             gameStatusSpan.style.color = "#2ecc71";
             
-            // Начальная еда (не на змейке)
             food = { x: 15, y: 10 };
             isDoubleOrb = false;
+            currentOrbActive = false;
             
-            // Генерация стен (если нужно)
             if (currentMode !== "classic") {
                 generateWalls();
             } else {
                 walls = [];
             }
             
-            generateValidFood(); // перегенерим еду с учётом стен и змейки
+            generateValidFood();
             drawCanvas();
             gameLoop = setInterval(gameTick, TICK_INTERVAL_MS);
         }
         
         function setMode(mode) {
             currentMode = mode;
-            // Обновить активную кнопку
             document.querySelectorAll('.mode-btn').forEach(btn => {
                 if (btn.dataset.mode === mode) {
                     btn.classList.add('active');
@@ -685,7 +788,7 @@
             newGame();
         }
         
-        // ========== ИНИЦИАЛИЗАЦИЯ ==========
+        // ========== СТАРТ ==========
         function setupEvents() {
             window.addEventListener('keydown', handleKeydown);
             canvas.addEventListener('touchstart', handleTouchStart, { passive: false });
@@ -700,7 +803,7 @@
             loadBestScore();
             initAudio();
             setupEvents();
-            setMode("orbs_walls"); // стартовый режим
+            setMode("orbs_walls");
         }
         
         start();
