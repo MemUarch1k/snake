@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>Memuar's Snake</title>
+    <title>Memuar's Snake — Стены + Орбы</title>
     <style>
         * {
             user-select: none;
@@ -39,6 +39,7 @@
             justify-content: space-between;
             margin-bottom: 20px;
             gap: 20px;
+            flex-wrap: wrap;
         }
 
         .score-card {
@@ -82,8 +83,36 @@
             height: auto;
         }
 
+        .mode-selector {
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            margin-bottom: 15px;
+            flex-wrap: wrap;
+        }
+
+        .mode-btn {
+            background: #1a1f2a;
+            border: none;
+            color: #c0d0e6;
+            font-family: inherit;
+            font-size: 14px;
+            font-weight: bold;
+            padding: 8px 16px;
+            border-radius: 60px;
+            cursor: pointer;
+            transition: 0.1s linear;
+            box-shadow: 0 2px 0 #0b0e12;
+        }
+
+        .mode-btn.active {
+            background: #2ecc71;
+            color: #0a0c12;
+            box-shadow: 0 0 10px #2ecc71;
+        }
+
         .controls {
-            margin-top: 20px;
+            margin-top: 15px;
             display: flex;
             gap: 12px;
             justify-content: center;
@@ -144,6 +173,7 @@
             .game-container { padding: 12px; }
             .score-value { font-size: 28px; }
             button { padding: 8px 20px; font-size: 14px; }
+            .mode-btn { font-size: 11px; padding: 6px 12px; }
         }
     </style>
 </head>
@@ -160,6 +190,12 @@
                     <div class="score-label">РЕКОРД</div>
                     <div class="score-value" id="bestScore">0</div>
                 </div>
+            </div>
+
+            <div class="mode-selector">
+                <button class="mode-btn" data-mode="classic">🟢 КЛАССИКА</button>
+                <button class="mode-btn" data-mode="walls">🟠 СТЕНЫ</button>
+                <button class="mode-btn" data-mode="orbs_walls" id="activeMode">🔵 ОРБЫ+СТЕНЫ</button>
             </div>
 
             <canvas id="snakeCanvas" width="500" height="500"></canvas>
@@ -179,45 +215,55 @@
 
 <script>
     (function(){
-        // ---------- НАСТРОЙКИ ----------
-        const BOARD_SIZE = 20;      // 20x20 поле
-        const CELL_SIZE = 25;        // 500px / 20
-        const TICK_INTERVAL_MS = 150; // мс на ход (скорость)
+        // ========== НАСТРОЙКИ ==========
+        const BOARD_SIZE = 20;
+        const CELL_SIZE = 25;
+        const TICK_INTERVAL_MS = 140;
+        const ORB_LIFESPAN_MS = 3000; // 3 секунды
 
-        // DOM элементы
+        let currentMode = "orbs_walls";
+        
+        let walls = []; // массив {x, y}
+        let orbTimeout = null;
+        let currentOrbActive = false;
+        
+        // DOM
         const canvas = document.getElementById('snakeCanvas');
         const ctx = canvas.getContext('2d');
         const currentScoreSpan = document.getElementById('currentScore');
         const bestScoreSpan = document.getElementById('bestScore');
         const gameStatusSpan = document.getElementById('gameStatus');
-
+        
         // Игровые переменные
-        let snake = [];     // массив координат {x, y}
-        let direction = 'RIGHT';   // текущее направление
+        let snake = [];
+        let direction = 'RIGHT';
         let nextDirection = 'RIGHT';
         let food = { x: 12, y: 10 };
+        let isDoubleOrb = false;
         let score = 0;
         let bestScore = 0;
         let gameLoop = null;
-        let gameRunning = true;
-        let gameActive = true;   // true - игра идет, false - game over
-
-        // Звуки через Web Audio API
+        let gameActive = true;
+        
+        // Звуки
         let audioCtx = null;
         let eatSoundBuffer = null;
+        let doubleEatSoundBuffer = null;
         let crashSoundBuffer = null;
-
-        // ---------- ЗВУКИ ----------
+        let orbDisappearBuffer = null;
+        
+        // ========== ЗВУКИ ==========
         function initAudio() {
             if (audioCtx) return;
             try {
                 audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-                // Генерация звука "еда" (короткий синтезатор)
                 createEatSound();
+                createDoubleEatSound();
                 createCrashSound();
+                createOrbDisappearSound();
             } catch(e) { console.log("Web Audio не поддерживается"); }
         }
-
+        
         function createEatSound() {
             if (!audioCtx) return;
             const duration = 0.12;
@@ -232,7 +278,22 @@
             }
             eatSoundBuffer = buffer;
         }
-
+        
+        function createDoubleEatSound() {
+            if (!audioCtx) return;
+            const duration = 0.2;
+            const sampleRate = audioCtx.sampleRate;
+            const frameCount = sampleRate * duration;
+            const buffer = audioCtx.createBuffer(1, frameCount, sampleRate);
+            const data = buffer.getChannelData(0);
+            for (let i = 0; i < frameCount; i++) {
+                let t = i / sampleRate;
+                let freq = 440 + t * 400;
+                data[i] = Math.sin(2 * Math.PI * freq * t) * Math.sin(2 * Math.PI * 2 * freq * t) * 0.5 * Math.exp(-t * 8);
+            }
+            doubleEatSoundBuffer = buffer;
+        }
+        
         function createCrashSound() {
             if (!audioCtx) return;
             const duration = 0.3;
@@ -248,15 +309,30 @@
             }
             crashSoundBuffer = buffer;
         }
-
-        function playEatSound() {
-            if (!audioCtx || !eatSoundBuffer) return;
+        
+        function createOrbDisappearSound() {
+            if (!audioCtx) return;
+            const duration = 0.25;
+            const sampleRate = audioCtx.sampleRate;
+            const frameCount = sampleRate * duration;
+            const buffer = audioCtx.createBuffer(1, frameCount, sampleRate);
+            const data = buffer.getChannelData(0);
+            for (let i = 0; i < frameCount; i++) {
+                let t = i / sampleRate;
+                let freq = 660 * Math.exp(-t * 8);
+                data[i] = Math.sin(2 * Math.PI * freq * t) * (1 - t/duration);
+            }
+            orbDisappearBuffer = buffer;
+        }
+        
+        function playEatSound(isDouble = false) {
+            if (!audioCtx) return;
             const source = audioCtx.createBufferSource();
-            source.buffer = eatSoundBuffer;
+            source.buffer = isDouble ? doubleEatSoundBuffer : eatSoundBuffer;
             source.connect(audioCtx.destination);
             source.start();
         }
-
+        
         function playCrashSound() {
             if (!audioCtx || !crashSoundBuffer) return;
             const source = audioCtx.createBufferSource();
@@ -264,8 +340,15 @@
             source.connect(audioCtx.destination);
             source.start();
         }
-
-        // Разблокировка аудио по первому касанию/клику
+        
+        function playOrbDisappearSound() {
+            if (!audioCtx || !orbDisappearBuffer) return;
+            const source = audioCtx.createBufferSource();
+            source.buffer = orbDisappearBuffer;
+            source.connect(audioCtx.destination);
+            source.start();
+        }
+        
         function unlockAudio() {
             if (audioCtx && audioCtx.state !== 'running') {
                 audioCtx.resume();
@@ -273,8 +356,8 @@
         }
         document.body.addEventListener('click', unlockAudio);
         document.body.addEventListener('touchstart', unlockAudio);
-
-        // ---------- ЗАГРУЗКА РЕКОРДА ----------
+        
+        // ========== РЕКОРД ==========
         function loadBestScore() {
             try {
                 const saved = localStorage.getItem('memuars_snake_best');
@@ -285,7 +368,7 @@
                 bestScoreSpan.innerText = bestScore;
             } catch(e) {}
         }
-
+        
         function saveBestScore() {
             if (score > bestScore) {
                 bestScore = score;
@@ -295,162 +378,247 @@
                 } catch(e) {}
             }
         }
-
-        // ---------- ИНИЦИАЛИЗАЦИЯ ЗМЕЙКИ ----------
-        function initGame() {
-            // Стартовая змейка (длина 3, горизонтально)
-            snake = [
-                { x: 10, y: 10 },
-                { x: 9, y: 10 },
-                { x: 8, y: 10 }
-            ];
-            direction = 'RIGHT';
-            nextDirection = 'RIGHT';
-            score = 0;
-            gameActive = true;
-            gameRunning = true;
-            currentScoreSpan.innerText = "0";
-            gameStatusSpan.innerHTML = "▶ ИГРА";
-            gameStatusSpan.style.color = "#2ecc71";
-            generateValidFood();
-            drawCanvas();
-            clearGameLoop();
-            startGameLoop();
+        
+// ========== ГЕНЕРАЦИЯ ЦЕЛЬНЫХ СТЕН (в 1.5 раза больше) ==========
+function isNearSnake(x, y, distance = 3) {
+    for (let seg of snake) {
+        if (Math.abs(seg.x - x) <= distance && Math.abs(seg.y - y) <= distance) {
+            return true;
         }
+    }
+    return false;
+}
 
-        function startGameLoop() {
-            if (gameLoop) clearInterval(gameLoop);
-            gameLoop = setInterval(gameTick, TICK_INTERVAL_MS);
-        }
-
-        function clearGameLoop() {
-            if (gameLoop) {
-                clearInterval(gameLoop);
-                gameLoop = null;
+function generateWalls() {
+    if (currentMode === "classic") {
+        walls = [];
+        return;
+    }
+    
+    walls = [];
+    // Цельные блоки: 2x2, 2x3, 3x2, 3x3 (добавил 3x3 для большего количества)
+    const wallBlocks = [
+        { w: 2, h: 2 }, { w: 2, h: 3 }, { w: 3, h: 2 }, { w: 2, h: 2 },
+        { w: 3, h: 3 }, { w: 2, h: 2 }, { w: 2, h: 3 }, { w: 3, h: 2 }
+    ];
+    
+    let totalWallCells = 0;
+    const maxWallCells = 36; // было 24 → увеличили в 1.5 раза
+    
+    for (let attempt = 0; attempt < 30 && totalWallCells < maxWallCells; attempt++) {
+        const block = wallBlocks[Math.floor(Math.random() * wallBlocks.length)];
+        const startX = Math.floor(Math.random() * (BOARD_SIZE - block.w));
+        const startY = Math.floor(Math.random() * (BOARD_SIZE - block.h));
+        
+        // Проверка: не рядом со змейкой, не на еде, не перекрывает стартовую зону
+        let valid = true;
+        for (let dx = 0; dx < block.w; dx++) {
+            for (let dy = 0; dy < block.h; dy++) {
+                const x = startX + dx;
+                const y = startY + dy;
+                if (isNearSnake(x, y, 2)) valid = false;
+                if (food && x === food.x && y === food.y) valid = false;
+                // Не перекрывать стартовую зону змейки
+                if (x >= 7 && x <= 13 && y >= 7 && y <= 13) valid = false;
             }
         }
-
-        // Генерация еды вне змейки
-        function generateValidFood() {
-            const totalCells = BOARD_SIZE * BOARD_SIZE;
-            if (snake.length >= totalCells) {
-                // ПОБЕДА! (змейка заполнила поле)
-                gameActive = false;
-                gameRunning = false;
-                clearGameLoop();
-                gameStatusSpan.innerHTML = "🏆 ПОБЕДА! 🏆";
-                gameStatusSpan.style.color = "#f1c40f";
-                saveBestScore();
+        
+        if (valid) {
+            for (let dx = 0; dx < block.w; dx++) {
+                for (let dy = 0; dy < block.h; dy++) {
+                    const x = startX + dx;
+                    const y = startY + dy;
+                    if (!walls.some(w => w.x === x && w.y === y)) {
+                        walls.push({ x, y });
+                        totalWallCells++;
+                    }
+                }
+            }
+        }
+    }
+}
+        
+        // ========== ГЕНЕРАЦИЯ ЕДЫ / ОРБА ==========
+        function clearOrbTimer() {
+            if (orbTimeout) {
+                clearTimeout(orbTimeout);
+                orbTimeout = null;
+            }
+        }
+        
+        function removeOrb() {
+            if (currentOrbActive && gameActive) {
+                currentOrbActive = false;
+                isDoubleOrb = false;
+                playOrbDisappearSound();
+                // Превращаем обратно в обычную еду
+                generateNormalFood();
                 drawCanvas();
-                return;
             }
-
+        }
+        
+        function generateNormalFood() {
             const snakeSet = new Set(snake.map(s => `${s.x},${s.y}`));
+            const wallSet = new Set(walls.map(w => `${w.x},${w.y}`));
+            
             let freeCells = [];
             for (let i = 0; i < BOARD_SIZE; i++) {
                 for (let j = 0; j < BOARD_SIZE; j++) {
-                    if (!snakeSet.has(`${i},${j}`)) {
+                    const key = `${i},${j}`;
+                    if (!snakeSet.has(key) && !wallSet.has(key)) {
                         freeCells.push({ x: i, y: j });
                     }
                 }
             }
-            if (freeCells.length === 0) {
-                // победа, нет свободных клеток
+            
+            if (freeCells.length > 0) {
+                const rand = Math.floor(Math.random() * freeCells.length);
+                food = freeCells[rand];
+            }
+            isDoubleOrb = false;
+            currentOrbActive = false;
+        }
+        
+        function generateValidFood() {
+            const totalCells = BOARD_SIZE * BOARD_SIZE;
+            const snakeSet = new Set(snake.map(s => `${s.x},${s.y}`));
+            const wallSet = new Set(walls.map(w => `${w.x},${w.y}`));
+            
+            if (snake.length >= totalCells - walls.length) {
                 gameActive = false;
-                gameRunning = false;
-                clearGameLoop();
+                if (gameLoop) clearInterval(gameLoop);
                 gameStatusSpan.innerHTML = "🏆 ПОБЕДА! 🏆";
                 gameStatusSpan.style.color = "#f1c40f";
                 saveBestScore();
                 drawCanvas();
                 return;
             }
+            
+            let freeCells = [];
+            for (let i = 0; i < BOARD_SIZE; i++) {
+                for (let j = 0; j < BOARD_SIZE; j++) {
+                    const key = `${i},${j}`;
+                    if (!snakeSet.has(key) && !wallSet.has(key)) {
+                        freeCells.push({ x: i, y: j });
+                    }
+                }
+            }
+            
+            if (freeCells.length === 0) {
+                gameActive = false;
+                if (gameLoop) clearInterval(gameLoop);
+                gameStatusSpan.innerHTML = "🏆 ПОБЕДА! 🏆";
+                gameStatusSpan.style.color = "#f1c40f";
+                saveBestScore();
+                drawCanvas();
+                return;
+            }
+            
             const rand = Math.floor(Math.random() * freeCells.length);
             food = freeCells[rand];
+            
+            // Для режима orbs_walls: 10% шанс на орб
+            if (currentMode === "orbs_walls") {
+                const orbChance = Math.random() < 0.1;
+                if (orbChance) {
+                    isDoubleOrb = true;
+                    currentOrbActive = true;
+                    clearOrbTimer();
+                    orbTimeout = setTimeout(() => {
+                        removeOrb();
+                    }, ORB_LIFESPAN_MS);
+                } else {
+                    isDoubleOrb = false;
+                    currentOrbActive = false;
+                }
+            } else {
+                isDoubleOrb = false;
+                currentOrbActive = false;
+            }
         }
-
-        // Движение змейки
+        
+        // ========== ДВИЖЕНИЕ ==========
         function moveSnake() {
             if (!gameActive) return false;
-
+            
             direction = nextDirection;
-
-            // Вычисляем новую голову
             let newHead = { ...snake[0] };
             switch(direction) {
                 case 'RIGHT': newHead.x += 1; break;
-                case 'LEFT':  newHead.x -= 1; break;
-                case 'UP':    newHead.y -= 1; break;
-                case 'DOWN':  newHead.y += 1; break;
-                default: break;
+                case 'LEFT': newHead.x -= 1; break;
+                case 'UP': newHead.y -= 1; break;
+                case 'DOWN': newHead.y += 1; break;
             }
-
-            // Проверка столкновения со стенами
+            
+            // Стены
+            if (currentMode !== "classic") {
+                const hitWall = walls.some(w => w.x === newHead.x && w.y === newHead.y);
+                if (hitWall) return false;
+            }
+            
+            // Границы
             if (newHead.x < 0 || newHead.x >= BOARD_SIZE || newHead.y < 0 || newHead.y >= BOARD_SIZE) {
-                return false; // смерть
+                return false;
             }
-
-            // Едим?
+            
             const willEat = (newHead.x === food.x && newHead.y === food.y);
-
-            // Двигаем змейку
+            const growAmount = (willEat && isDoubleOrb) ? 2 : 1;
+            
             if (willEat) {
-                // Добавляем новую голову, не удаляем хвост
+                if (isDoubleOrb && currentOrbActive) {
+                    clearOrbTimer();
+                    currentOrbActive = false;
+                }
+                
                 snake.unshift(newHead);
-                // увеличиваем счет
-                score++;
+                if (growAmount === 2) {
+                    const tail = snake[snake.length-1];
+                    snake.push({ ...tail });
+                    score += 2;
+                    playEatSound(true);
+                } else {
+                    score++;
+                    playEatSound(false);
+                }
                 currentScoreSpan.innerText = score;
-                playEatSound();
-                saveBestScore(); // обновляем рекорд если нужно
-                generateValidFood(); // создаем новую еду (и проверим победу)
+                saveBestScore();
+                generateValidFood();
             } else {
-                // обычный ход: добавляем голову, убираем хвост
                 snake.unshift(newHead);
                 snake.pop();
             }
-
-            // Проверка столкновения с собой (голова не должна совпадать с телом)
+            
+            // Самосъедение
             const head = snake[0];
             for (let i = 1; i < snake.length; i++) {
                 if (snake[i].x === head.x && snake[i].y === head.y) {
-                    return false; // смерть
+                    return false;
                 }
             }
-
+            
             return true;
         }
-
-        // Игровой тик
+        
+        // ========== ИГРОВОЙ ТИК ==========
         function gameTick() {
             if (!gameActive) return;
-
             const success = moveSnake();
             drawCanvas();
-
             if (!success) {
-                // Игра окончена
                 gameActive = false;
-                gameRunning = false;
-                clearGameLoop();
+                if (gameLoop) clearInterval(gameLoop);
                 playCrashSound();
                 gameStatusSpan.innerHTML = "💀 GAME OVER 💀";
                 gameStatusSpan.style.color = "#e74c3c";
                 saveBestScore();
-                drawCanvas(); // отрисовать сообщение на канвасе тоже
-                return;
-            }
-
-            // Проверить, не победа ли (если generateValidFood установила gameActive = false)
-            if (!gameActive) {
-                clearGameLoop();
                 drawCanvas();
             }
         }
-
-        // ---------- ОТРИСОВКА ----------
+        
+        // ========== ОТРИСОВКА ==========
         function drawCanvas() {
             ctx.clearRect(0, 0, canvas.width, canvas.height);
-            // Рисуем сетку
+            // Сетка
             ctx.strokeStyle = '#1a202c';
             ctx.lineWidth = 0.5;
             for (let i = 0; i <= BOARD_SIZE; i++) {
@@ -462,16 +630,41 @@
                 ctx.lineTo(canvas.width, i * CELL_SIZE);
                 ctx.stroke();
             }
-
-            // Еда
-            ctx.fillStyle = '#e67e22';
-            ctx.shadowBlur = 8;
-            ctx.shadowColor = '#e67e22';
-            ctx.fillRect(food.x * CELL_SIZE + 1, food.y * CELL_SIZE + 1, CELL_SIZE - 2, CELL_SIZE - 2);
-            ctx.fillStyle = '#f39c12';
-            ctx.fillRect(food.x * CELL_SIZE + 3, food.y * CELL_SIZE + 3, CELL_SIZE - 6, CELL_SIZE - 6);
+            
+            // Стены (цельные блоки)
+            if (currentMode !== "classic") {
+                for (let w of walls) {
+                    ctx.fillStyle = '#4a5b6e';
+                    ctx.shadowBlur = 0;
+                    ctx.fillRect(w.x * CELL_SIZE + 2, w.y * CELL_SIZE + 2, CELL_SIZE - 4, CELL_SIZE - 4);
+                    ctx.fillStyle = '#2c3e50';
+                    ctx.fillRect(w.x * CELL_SIZE + 4, w.y * CELL_SIZE + 4, CELL_SIZE - 8, CELL_SIZE - 8);
+                }
+            }
+            
+            // Еда / Орб
+            if (isDoubleOrb && currentMode === "orbs_walls" && currentOrbActive) {
+                // Мигающий орб
+                const pulse = (Date.now() % 500) / 500;
+                ctx.fillStyle = `rgba(243, 156, 18, ${0.6 + pulse * 0.4})`;
+                ctx.shadowBlur = 12;
+                ctx.shadowColor = '#f39c12';
+                ctx.fillRect(food.x * CELL_SIZE + 1, food.y * CELL_SIZE + 1, CELL_SIZE - 2, CELL_SIZE - 2);
+                ctx.fillStyle = '#e67e22';
+                ctx.fillRect(food.x * CELL_SIZE + 4, food.y * CELL_SIZE + 4, CELL_SIZE - 8, CELL_SIZE - 8);
+                ctx.fillStyle = '#fff';
+                ctx.font = `bold ${CELL_SIZE-8}px monospace`;
+                ctx.fillText("2", food.x * CELL_SIZE + 8, food.y * CELL_SIZE + 20);
+            } else {
+                ctx.fillStyle = '#e67e22';
+                ctx.shadowBlur = 8;
+                ctx.shadowColor = '#e67e22';
+                ctx.fillRect(food.x * CELL_SIZE + 1, food.y * CELL_SIZE + 1, CELL_SIZE - 2, CELL_SIZE - 2);
+                ctx.fillStyle = '#f39c12';
+                ctx.fillRect(food.x * CELL_SIZE + 3, food.y * CELL_SIZE + 3, CELL_SIZE - 6, CELL_SIZE - 6);
+            }
             ctx.shadowBlur = 0;
-
+            
             // Змейка
             for (let i = 0; i < snake.length; i++) {
                 const seg = snake[i];
@@ -496,36 +689,30 @@
                     ctx.fill();
                 }
             }
-
-            // Если игра не активна - наложим полупрозрачный слой + текст
+            
             if (!gameActive) {
                 ctx.fillStyle = 'rgba(0,0,0,0.7)';
                 ctx.fillRect(0, 0, canvas.width, canvas.height);
                 ctx.font = 'bold 20px "Courier New", monospace';
                 ctx.fillStyle = '#fff';
                 ctx.shadowBlur = 0;
-                let msg = gameActive ? '' : (snake.length === BOARD_SIZE*BOARD_SIZE ? 'YOU WIN!' : 'GAME OVER');
-                if (!gameActive && snake.length !== BOARD_SIZE*BOARD_SIZE) msg = 'GAME OVER';
-                if (!gameActive && snake.length === BOARD_SIZE*BOARD_SIZE) msg = 'PERFECT WIN!';
+                let msg = "GAME OVER";
+                if (snake.length === BOARD_SIZE*BOARD_SIZE - walls.length) msg = "PERFECT WIN!";
                 ctx.fillText(msg, canvas.width/2 - ctx.measureText(msg).width/2, canvas.height/2);
             }
         }
-
-        // ---------- УПРАВЛЕНИЕ ----------
+        
+        // ========== УПРАВЛЕНИЕ ==========
         function changeDirection(newDir) {
             if (!gameActive) return;
-            const opposite = {
-                'UP': 'DOWN', 'DOWN': 'UP', 'LEFT': 'RIGHT', 'RIGHT': 'LEFT'
-            };
+            const opposite = { 'UP':'DOWN','DOWN':'UP','LEFT':'RIGHT','RIGHT':'LEFT' };
             if (opposite[newDir] !== direction) {
                 nextDirection = newDir;
             }
         }
-
-        // Клавиатура
+        
         function handleKeydown(e) {
             const key = e.key;
-            e.preventDefault();
             if (key === 'ArrowUp') changeDirection('UP');
             else if (key === 'ArrowDown') changeDirection('DOWN');
             else if (key === 'ArrowLeft') changeDirection('LEFT');
@@ -535,16 +722,13 @@
                 e.preventDefault();
             }
         }
-
-        // Свайпы
+        
         let touchStart = null;
         function handleTouchStart(e) {
             e.preventDefault();
-            const rect = canvas.getBoundingClientRect();
-            const touch = e.touches[0];
-            touchStart = { x: touch.clientX, y: touch.clientY };
+            touchStart = { x: e.touches[0].clientX, y: e.touches[0].clientY };
         }
-
+        
         function handleTouchEnd(e) {
             if (!touchStart) return;
             e.preventDefault();
@@ -560,27 +744,69 @@
             }
             touchStart = null;
         }
-
+        
         function newGame() {
-            clearGameLoop();
-            initGame();
+            if (gameLoop) clearInterval(gameLoop);
+            clearOrbTimer();
+            
+            snake = [
+                { x: 10, y: 10 },
+                { x: 9, y: 10 },
+                { x: 8, y: 10 }
+            ];
+            direction = 'RIGHT';
+            nextDirection = 'RIGHT';
+            score = 0;
+            gameActive = true;
+            currentScoreSpan.innerText = "0";
+            gameStatusSpan.innerHTML = "▶ ИГРА";
+            gameStatusSpan.style.color = "#2ecc71";
+            
+            food = { x: 15, y: 10 };
+            isDoubleOrb = false;
+            currentOrbActive = false;
+            
+            if (currentMode !== "classic") {
+                generateWalls();
+            } else {
+                walls = [];
+            }
+            
+            generateValidFood();
+            drawCanvas();
+            gameLoop = setInterval(gameTick, TICK_INTERVAL_MS);
         }
-
-        // ---------- НАВЕШИВАНИЕ СОБЫТИЙ И СТАРТ ----------
+        
+        function setMode(mode) {
+            currentMode = mode;
+            document.querySelectorAll('.mode-btn').forEach(btn => {
+                if (btn.dataset.mode === mode) {
+                    btn.classList.add('active');
+                } else {
+                    btn.classList.remove('active');
+                }
+            });
+            newGame();
+        }
+        
+        // ========== СТАРТ ==========
         function setupEvents() {
             window.addEventListener('keydown', handleKeydown);
             canvas.addEventListener('touchstart', handleTouchStart, { passive: false });
             canvas.addEventListener('touchend', handleTouchEnd);
             document.getElementById('newGameBtn').addEventListener('click', () => newGame());
+            document.querySelectorAll('.mode-btn').forEach(btn => {
+                btn.addEventListener('click', () => setMode(btn.dataset.mode));
+            });
         }
-
+        
         function start() {
             loadBestScore();
             initAudio();
-            initGame();
             setupEvents();
+            setMode("orbs_walls");
         }
-
+        
         start();
     })();
 </script>
