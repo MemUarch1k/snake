@@ -219,22 +219,20 @@
         const BOARD_SIZE = 20;
         const CELL_SIZE = 25;
         const TICK_INTERVAL_MS = 140;
-        const ORB_LIFESPAN_MS = 3000; // 3 секунды
+        const ORB_LIFESPAN_MS = 3000;
 
         let currentMode = "orbs_walls";
         
-        let walls = []; // массив {x, y}
+        let walls = [];
         let orbTimeout = null;
         let currentOrbActive = false;
         
-        // DOM
         const canvas = document.getElementById('snakeCanvas');
         const ctx = canvas.getContext('2d');
         const currentScoreSpan = document.getElementById('currentScore');
         const bestScoreSpan = document.getElementById('bestScore');
         const gameStatusSpan = document.getElementById('gameStatus');
         
-        // Игровые переменные
         let snake = [];
         let direction = 'RIGHT';
         let nextDirection = 'RIGHT';
@@ -245,7 +243,6 @@
         let gameLoop = null;
         let gameActive = true;
         
-        // Звуки
         let audioCtx = null;
         let eatSoundBuffer = null;
         let doubleEatSoundBuffer = null;
@@ -379,66 +376,63 @@
             }
         }
         
-// ========== ГЕНЕРАЦИЯ ЦЕЛЬНЫХ СТЕН (в 1.5 раза больше) ==========
-function isNearSnake(x, y, distance = 3) {
-    for (let seg of snake) {
-        if (Math.abs(seg.x - x) <= distance && Math.abs(seg.y - y) <= distance) {
-            return true;
-        }
-    }
-    return false;
-}
-
-function generateWalls() {
-    if (currentMode === "classic") {
-        walls = [];
-        return;
-    }
-    
-    walls = [];
-    // Цельные блоки: 2x2, 2x3, 3x2, 3x3 (добавил 3x3 для большего количества)
-    const wallBlocks = [
-        { w: 2, h: 2 }, { w: 2, h: 3 }, { w: 3, h: 2 }, { w: 2, h: 2 },
-        { w: 3, h: 3 }, { w: 2, h: 2 }, { w: 2, h: 3 }, { w: 3, h: 2 }
-    ];
-    
-    let totalWallCells = 0;
-    const maxWallCells = 36; // было 24 → увеличили в 1.5 раза
-    
-    for (let attempt = 0; attempt < 30 && totalWallCells < maxWallCells; attempt++) {
-        const block = wallBlocks[Math.floor(Math.random() * wallBlocks.length)];
-        const startX = Math.floor(Math.random() * (BOARD_SIZE - block.w));
-        const startY = Math.floor(Math.random() * (BOARD_SIZE - block.h));
-        
-        // Проверка: не рядом со змейкой, не на еде, не перекрывает стартовую зону
-        let valid = true;
-        for (let dx = 0; dx < block.w; dx++) {
-            for (let dy = 0; dy < block.h; dy++) {
-                const x = startX + dx;
-                const y = startY + dy;
-                if (isNearSnake(x, y, 2)) valid = false;
-                if (food && x === food.x && y === food.y) valid = false;
-                // Не перекрывать стартовую зону змейки
-                if (x >= 7 && x <= 13 && y >= 7 && y <= 13) valid = false;
+        // ========== СТЕНЫ (цельные блоки) ==========
+        function isNearSnake(x, y, distance = 3) {
+            for (let seg of snake) {
+                if (Math.abs(seg.x - x) <= distance && Math.abs(seg.y - y) <= distance) {
+                    return true;
+                }
             }
+            return false;
         }
         
-        if (valid) {
-            for (let dx = 0; dx < block.w; dx++) {
-                for (let dy = 0; dy < block.h; dy++) {
-                    const x = startX + dx;
-                    const y = startY + dy;
-                    if (!walls.some(w => w.x === x && w.y === y)) {
-                        walls.push({ x, y });
-                        totalWallCells++;
+        function generateWalls() {
+            if (currentMode === "classic") {
+                walls = [];
+                return;
+            }
+            
+            walls = [];
+            const wallBlocks = [
+                { w: 2, h: 2 }, { w: 2, h: 3 }, { w: 3, h: 2 }, { w: 2, h: 2 },
+                { w: 3, h: 3 }, { w: 2, h: 2 }, { w: 2, h: 3 }, { w: 3, h: 2 }
+            ];
+            
+            let totalWallCells = 0;
+            const maxWallCells = 36;
+            
+            for (let attempt = 0; attempt < 30 && totalWallCells < maxWallCells; attempt++) {
+                const block = wallBlocks[Math.floor(Math.random() * wallBlocks.length)];
+                const startX = Math.floor(Math.random() * (BOARD_SIZE - block.w));
+                const startY = Math.floor(Math.random() * (BOARD_SIZE - block.h));
+                
+                let valid = true;
+                for (let dx = 0; dx < block.w; dx++) {
+                    for (let dy = 0; dy < block.h; dy++) {
+                        const x = startX + dx;
+                        const y = startY + dy;
+                        if (isNearSnake(x, y, 2)) valid = false;
+                        if (food && x === food.x && y === food.y) valid = false;
+                        if (x >= 7 && x <= 13 && y >= 7 && y <= 13) valid = false;
+                    }
+                }
+                
+                if (valid) {
+                    for (let dx = 0; dx < block.w; dx++) {
+                        for (let dy = 0; dy < block.h; dy++) {
+                            const x = startX + dx;
+                            const y = startY + dy;
+                            if (!walls.some(w => w.x === x && w.y === y)) {
+                                walls.push({ x, y });
+                                totalWallCells++;
+                            }
+                        }
                     }
                 }
             }
         }
-    }
-}
         
-        // ========== ГЕНЕРАЦИЯ ЕДЫ / ОРБА ==========
+        // ========== ЕДА / ОРБЫ ==========
         function clearOrbTimer() {
             if (orbTimeout) {
                 clearTimeout(orbTimeout);
@@ -451,7 +445,6 @@ function generateWalls() {
                 currentOrbActive = false;
                 isDoubleOrb = false;
                 playOrbDisappearSound();
-                // Превращаем обратно в обычную еду
                 generateNormalFood();
                 drawCanvas();
             }
@@ -517,7 +510,6 @@ function generateWalls() {
             const rand = Math.floor(Math.random() * freeCells.length);
             food = freeCells[rand];
             
-            // Для режима orbs_walls: 10% шанс на орб
             if (currentMode === "orbs_walls") {
                 const orbChance = Math.random() < 0.1;
                 if (orbChance) {
@@ -550,13 +542,11 @@ function generateWalls() {
                 case 'DOWN': newHead.y += 1; break;
             }
             
-            // Стены
             if (currentMode !== "classic") {
                 const hitWall = walls.some(w => w.x === newHead.x && w.y === newHead.y);
                 if (hitWall) return false;
             }
             
-            // Границы
             if (newHead.x < 0 || newHead.x >= BOARD_SIZE || newHead.y < 0 || newHead.y >= BOARD_SIZE) {
                 return false;
             }
@@ -588,7 +578,6 @@ function generateWalls() {
                 snake.pop();
             }
             
-            // Самосъедение
             const head = snake[0];
             for (let i = 1; i < snake.length; i++) {
                 if (snake[i].x === head.x && snake[i].y === head.y) {
@@ -618,7 +607,7 @@ function generateWalls() {
         // ========== ОТРИСОВКА ==========
         function drawCanvas() {
             ctx.clearRect(0, 0, canvas.width, canvas.height);
-            // Сетка
+            
             ctx.strokeStyle = '#1a202c';
             ctx.lineWidth = 0.5;
             for (let i = 0; i <= BOARD_SIZE; i++) {
@@ -631,7 +620,6 @@ function generateWalls() {
                 ctx.stroke();
             }
             
-            // Стены (цельные блоки)
             if (currentMode !== "classic") {
                 for (let w of walls) {
                     ctx.fillStyle = '#4a5b6e';
@@ -642,9 +630,7 @@ function generateWalls() {
                 }
             }
             
-            // Еда / Орб
             if (isDoubleOrb && currentMode === "orbs_walls" && currentOrbActive) {
-                // Мигающий орб
                 const pulse = (Date.now() % 500) / 500;
                 ctx.fillStyle = `rgba(243, 156, 18, ${0.6 + pulse * 0.4})`;
                 ctx.shadowBlur = 12;
@@ -665,7 +651,6 @@ function generateWalls() {
             }
             ctx.shadowBlur = 0;
             
-            // Змейка
             for (let i = 0; i < snake.length; i++) {
                 const seg = snake[i];
                 const grad = ctx.createLinearGradient(seg.x * CELL_SIZE, seg.y * CELL_SIZE, (seg.x+1)*CELL_SIZE, (seg.y+1)*CELL_SIZE);
