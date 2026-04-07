@@ -379,63 +379,64 @@
             }
         }
         
-        // ========== ГЕНЕРАЦИЯ ЦЕЛЬНЫХ СТЕН ==========
-        function isNearSnake(x, y, distance = 3) {
-            for (let seg of snake) {
-                if (Math.abs(seg.x - x) <= distance && Math.abs(seg.y - y) <= distance) {
-                    return true;
-                }
+// ========== ГЕНЕРАЦИЯ ЦЕЛЬНЫХ СТЕН (в 1.5 раза больше) ==========
+function isNearSnake(x, y, distance = 3) {
+    for (let seg of snake) {
+        if (Math.abs(seg.x - x) <= distance && Math.abs(seg.y - y) <= distance) {
+            return true;
+        }
+    }
+    return false;
+}
+
+function generateWalls() {
+    if (currentMode === "classic") {
+        walls = [];
+        return;
+    }
+    
+    walls = [];
+    // Цельные блоки: 2x2, 2x3, 3x2, 3x3 (добавил 3x3 для большего количества)
+    const wallBlocks = [
+        { w: 2, h: 2 }, { w: 2, h: 3 }, { w: 3, h: 2 }, { w: 2, h: 2 },
+        { w: 3, h: 3 }, { w: 2, h: 2 }, { w: 2, h: 3 }, { w: 3, h: 2 }
+    ];
+    
+    let totalWallCells = 0;
+    const maxWallCells = 36; // было 24 → увеличили в 1.5 раза
+    
+    for (let attempt = 0; attempt < 30 && totalWallCells < maxWallCells; attempt++) {
+        const block = wallBlocks[Math.floor(Math.random() * wallBlocks.length)];
+        const startX = Math.floor(Math.random() * (BOARD_SIZE - block.w));
+        const startY = Math.floor(Math.random() * (BOARD_SIZE - block.h));
+        
+        // Проверка: не рядом со змейкой, не на еде, не перекрывает стартовую зону
+        let valid = true;
+        for (let dx = 0; dx < block.w; dx++) {
+            for (let dy = 0; dy < block.h; dy++) {
+                const x = startX + dx;
+                const y = startY + dy;
+                if (isNearSnake(x, y, 2)) valid = false;
+                if (food && x === food.x && y === food.y) valid = false;
+                // Не перекрывать стартовую зону змейки
+                if (x >= 7 && x <= 13 && y >= 7 && y <= 13) valid = false;
             }
-            return false;
         }
         
-        function generateWalls() {
-            if (currentMode === "classic") {
-                walls = [];
-                return;
-            }
-            
-            walls = [];
-            // Цельные блоки: 2x2, 2x3 или 3x2 (случайно)
-            const wallBlocks = [
-                { w: 2, h: 2 }, { w: 2, h: 3 }, { w: 3, h: 2 }, { w: 2, h: 2 }, { w: 2, h: 2 }
-            ];
-            
-            let totalWallCells = 0;
-            const maxWallCells = 24; // примерно 10-18 клеток (блоки по 2-6 клеток)
-            
-            for (let attempt = 0; attempt < 20 && totalWallCells < maxWallCells; attempt++) {
-                const block = wallBlocks[Math.floor(Math.random() * wallBlocks.length)];
-                const startX = Math.floor(Math.random() * (BOARD_SIZE - block.w));
-                const startY = Math.floor(Math.random() * (BOARD_SIZE - block.h));
-                
-                // Проверка: не рядом со змейкой и не на еде
-                let valid = true;
-                for (let dx = 0; dx < block.w; dx++) {
-                    for (let dy = 0; dy < block.h; dy++) {
-                        const x = startX + dx;
-                        const y = startY + dy;
-                        if (isNearSnake(x, y, 2)) valid = false;
-                        if (food && x === food.x && y === food.y) valid = false;
-                        // Не перекрывать стартовую зону змейки
-                        if (x >= 8 && x <= 12 && y >= 8 && y <= 12) valid = false;
-                    }
-                }
-                
-                if (valid) {
-                    for (let dx = 0; dx < block.w; dx++) {
-                        for (let dy = 0; dy < block.h; dy++) {
-                            const x = startX + dx;
-                            const y = startY + dy;
-                            if (!walls.some(w => w.x === x && w.y === y)) {
-                                walls.push({ x, y });
-                                totalWallCells++;
-                            }
-                        }
+        if (valid) {
+            for (let dx = 0; dx < block.w; dx++) {
+                for (let dy = 0; dy < block.h; dy++) {
+                    const x = startX + dx;
+                    const y = startY + dy;
+                    if (!walls.some(w => w.x === x && w.y === y)) {
+                        walls.push({ x, y });
+                        totalWallCells++;
                     }
                 }
             }
         }
+    }
+}
         
         // ========== ГЕНЕРАЦИЯ ЕДЫ / ОРБА ==========
         function clearOrbTimer() {
